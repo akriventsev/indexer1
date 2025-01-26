@@ -1,3 +1,4 @@
+//! Trait that describes the persistent storage used in indexing
 use alloy::rpc::types::{Filter, Log};
 use futures::Future;
 
@@ -7,6 +8,7 @@ pub mod postgres;
 pub mod sqlite;
 
 pub trait LogStorage {
+    /// Method should open up a transaction, then invoke ```log_processor``` and update the ```last_observed_block```
     fn insert_logs<P: Processor>(
         &self,
         chain_id: u64,
@@ -16,6 +18,10 @@ pub trait LogStorage {
         log_processor: &mut P,
     ) -> impl Future<Output = anyhow::Result<()>>;
 
+    /// Method is used to lazily initialize filter store (if not) and extract filter from storage
+    /// if it present. In case it doesn't it should create the instance and return
+    /// ```from_block``` as a start point of indexing.
+    /// Returns u64 block number and String filter_id
     fn get_or_create_filter(
         &self,
         filter: &Filter,

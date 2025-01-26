@@ -1,3 +1,4 @@
+//! Indexer implementation
 use std::time::Duration;
 
 use alloy::{
@@ -17,6 +18,8 @@ use tokio_stream::{wrappers::IntervalStream, StreamExt as StreamExtTokio};
 use crate::{builder::IndexerBuilder, storage::LogStorage};
 
 pub trait Processor {
+    /// Function is invoked every time new logs are found. They are guaranteed to be ordered and
+    /// not duplicated if applied to database through given transaction.
     fn process<DB: Database>(
         &mut self,
         logs: &[Log],
@@ -128,7 +131,7 @@ impl<P: Processor, S: LogStorage> Indexer<P, S> {
         Ok(())
     }
 
-    pub async fn spawn_ws_watcher(&self) -> anyhow::Result<Box<dyn Stream<Item = Log> + Unpin>> {
+    async fn spawn_ws_watcher(&self) -> anyhow::Result<Box<dyn Stream<Item = Log> + Unpin>> {
         let ws_provider = match self.ws_provider {
             Some(ref ws_provider) => ws_provider.clone(),
             None => return Ok(Box::new(stream::empty())),

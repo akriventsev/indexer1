@@ -1,3 +1,4 @@
+//! Indexer building tools
 use std::time::Duration;
 
 use alloy::{
