@@ -6,18 +6,24 @@ use alloy::{
     pubsub::PubSubFrontend,
     rpc::types::{Filter, Log},
     sol_types::SolValue,
-    transports::{
-        http::{Client, Http},
-        BoxFuture,
-    },
+    transports::http::{Client, Http},
 };
-use futures::{stream, Stream};
+use futures::{stream, Future, Stream};
 use sha2::{Digest, Sha256};
-use sqlx::{Postgres, Transaction};
+use sqlx::{Database, Transaction};
 use tokio::time::interval;
 use tokio_stream::{wrappers::IntervalStream, StreamExt as StreamExtTokio};
 
-use crate::{builder::IndexerBuilder, storage::PostgresLogStorage};
+use crate::{builder::IndexerBuilder, storage::LogStorage};
+
+pub trait Processor {
+    fn process<DB: Database>(
+        &mut self,
+        logs: &[Log],
+        transaction: &mut Transaction<'static, DB>,
+        chain_id: u64,
+    ) -> impl Future<Output = anyhow::Result<()>>;
+}
 
 pub fn filter_id(filter: &Filter, chain_id: u64) -> String {
     let mut hasher = Sha256::new();
@@ -58,29 +64,20 @@ pub fn filter_id(filter: &Filter, chain_id: u64) -> String {
     keccak256(result).to_string()
 }
 
-pub struct Indexer<
-    P: Fn(&[Log], &mut Transaction<'static, Postgres>, u64) -> BoxFuture<'static, anyhow::Result<()>>,
-> {
+pub struct Indexer<P: Processor, S: LogStorage> {
     chain_id: u64,
     filter_id: String,
     filter: Filter,
     last_observed_block: u64,
-    storage: PostgresLogStorage,
+    storage: S,
     log_processor: P,
     provider: RootProvider<Http<Client>>,
     ws_provider: Option<RootProvider<PubSubFrontend>>,
     fetch_interval: Duration,
 }
 
-impl<
-        P: Fn(
-            &[Log],
-            &mut Transaction<'static, Postgres>,
-            u64,
-        ) -> BoxFuture<'static, anyhow::Result<()>>,
-    > Indexer<P>
-{
-    pub fn builder() -> IndexerBuilder<P> {
+impl<P: Processor, S: LogStorage> Indexer<P, S> {
+    pub fn builder() -> IndexerBuilder<P, S> {
         IndexerBuilder::default()
     }
 
@@ -90,7 +87,7 @@ impl<
         provider: RootProvider<Http<Client>>,
         ws_provider: Option<RootProvider<PubSubFrontend>>,
         fetch_interval: Duration,
-        storage: PostgresLogStorage,
+        storage: S,
     ) -> anyhow::Result<Self> {
         let chain_id = provider.get_chain_id().await?;
 
@@ -116,6 +113,7 @@ impl<
         tokio::pin!(ws_watcher);
         tokio::pin!(poll_interval);
 
+        log::info!("Succesfully initialised watcher and poller");
         loop {
             tokio::select! {
                 Some(_) = ws_watcher.next() => {}
@@ -123,6 +121,7 @@ impl<
                 else => break,
             }
 
+            log::debug!("Starting to handle tick");
             self.handle_tick().await?;
         }
 
@@ -150,17 +149,21 @@ impl<
             .from_block(self.last_observed_block)
             .to_block(last_block_number - 1);
 
+        log::debug!(
+            "Fetching logs from {} to {}",
+            self.last_observed_block,
+            last_block_number
+        );
         let logs = self.provider.get_logs(&filter).await?;
 
-        println!("{}", self.last_observed_block);
-        println!("{}", last_block_number);
+        log::debug!("Updating storage ");
         self.storage
             .insert_logs(
                 self.chain_id,
                 &logs,
                 &self.filter_id,
                 last_block_number,
-                &self.log_processor,
+                &mut self.log_processor,
             )
             .await?;
 
