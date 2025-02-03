@@ -8,13 +8,17 @@ pub mod postgres;
 pub mod sqlite;
 
 pub trait LogStorage {
+    /// Type of transaction, &mut Self::Transaction will be propagated into processor function
+    type Transaction: Sized;
+
     /// Method should open up a transaction, then invoke ```log_processor``` and update the ```last_observed_block```
-    fn insert_logs<P: Processor>(
+    fn insert_logs<P: Processor<Self::Transaction>>(
         &self,
         chain_id: u64,
         logs: &[Log],
         filter_id: &str,
-        new_last_observed_block: u64,
+        prev_saved_block: u64,
+        new_saved_block: u64,
         log_processor: &mut P,
     ) -> impl Future<Output = anyhow::Result<()>>;
 

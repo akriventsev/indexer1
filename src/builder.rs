@@ -9,14 +9,14 @@ use alloy::{
 };
 use anyhow::{anyhow, Context};
 use futures::future::Either;
-use sqlx::{PgPool, SqlitePool};
+use sqlx::{PgPool, Postgres, Sqlite, SqlitePool};
 
 use crate::{
     indexer1::{Indexer, Processor},
     storage::LogStorage,
 };
 
-pub struct IndexerBuilder<P: Processor, S: LogStorage> {
+pub struct IndexerBuilder<S: LogStorage, P: Processor<S::Transaction>> {
     http_provider: Option<Either<Url, RootProvider<Http<Client>>>>,
     ws_provider: Option<Either<Url, RootProvider<PubSubFrontend>>>,
     poll_interval: Option<Duration>,
@@ -25,7 +25,7 @@ pub struct IndexerBuilder<P: Processor, S: LogStorage> {
     storage: Option<S>,
 }
 
-impl<P: Processor, S: LogStorage> Default for IndexerBuilder<P, S> {
+impl<S: LogStorage, P: Processor<S::Transaction>> Default for IndexerBuilder<S, P> {
     fn default() -> Self {
         Self {
             http_provider: None,
@@ -38,21 +38,21 @@ impl<P: Processor, S: LogStorage> Default for IndexerBuilder<P, S> {
     }
 }
 
-impl<P: Processor> IndexerBuilder<P, PgPool> {
+impl<P: Processor<sqlx::Transaction<'static, Postgres>>> IndexerBuilder<PgPool, P> {
     pub fn pg_storage(mut self, pool: PgPool) -> Self {
         self.storage = Some(pool);
         self
     }
 }
 
-impl<P: Processor> IndexerBuilder<P, SqlitePool> {
+impl<P: Processor<sqlx::Transaction<'static, Sqlite>>> IndexerBuilder<SqlitePool, P> {
     pub fn sqlite_storage(mut self, pool: SqlitePool) -> Self {
         self.storage = Some(pool);
         self
     }
 }
 
-impl<P: Processor, S: LogStorage> IndexerBuilder<P, S> {
+impl<S: LogStorage, P: Processor<S::Transaction>> IndexerBuilder<S, P> {
     pub fn http_rpc_url(mut self, url: Url) -> Self {
         self.http_provider = Some(Either::Left(url));
         self
@@ -83,7 +83,7 @@ impl<P: Processor, S: LogStorage> IndexerBuilder<P, S> {
         self
     }
 
-    pub async fn build(self) -> anyhow::Result<Indexer<P, S>> {
+    pub async fn build(self) -> anyhow::Result<Indexer<S, P>> {
         let http_provider = match self
             .http_provider
             .ok_or(anyhow!("Http porvider is missing"))?

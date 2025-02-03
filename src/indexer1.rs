@@ -9,21 +9,22 @@ use alloy::{
     sol_types::SolValue,
     transports::http::{Client, Http},
 };
-use futures::{stream, Future, Stream};
+use futures::{stream, Future, Stream, StreamExt};
 use sha2::{Digest, Sha256};
-use sqlx::{Database, Transaction};
 use tokio::time::interval;
-use tokio_stream::{wrappers::IntervalStream, StreamExt as StreamExtTokio};
+use tokio_stream::wrappers::IntervalStream;
 
 use crate::{builder::IndexerBuilder, storage::LogStorage};
 
-pub trait Processor {
+pub trait Processor<T> {
     /// Function is invoked every time new logs are found. They are guaranteed to be ordered and
     /// not duplicated if applied to database through given transaction.
-    fn process<DB: Database>(
+    fn process(
         &mut self,
         logs: &[Log],
-        transaction: &mut Transaction<'static, DB>,
+        transaction: &mut T,
+        prev_saved_block: u64,
+        new_saved_block: u64,
         chain_id: u64,
     ) -> impl Future<Output = anyhow::Result<()>>;
 }
@@ -67,7 +68,7 @@ pub fn filter_id(filter: &Filter, chain_id: u64) -> String {
     keccak256(result).to_string()
 }
 
-pub struct Indexer<P: Processor, S: LogStorage> {
+pub struct Indexer<S: LogStorage, P: Processor<S::Transaction>> {
     chain_id: u64,
     filter_id: String,
     filter: Filter,
@@ -79,8 +80,8 @@ pub struct Indexer<P: Processor, S: LogStorage> {
     fetch_interval: Duration,
 }
 
-impl<P: Processor, S: LogStorage> Indexer<P, S> {
-    pub fn builder() -> IndexerBuilder<P, S> {
+impl<S: LogStorage, P: Processor<S::Transaction>> Indexer<S, P> {
+    pub fn builder() -> IndexerBuilder<S, P> {
         IndexerBuilder::default()
     }
 
@@ -111,10 +112,8 @@ impl<P: Processor, S: LogStorage> Indexer<P, S> {
     }
 
     pub async fn run(mut self) -> anyhow::Result<()> {
-        let poll_interval = IntervalStream::new(interval(self.fetch_interval));
-        let ws_watcher = self.spawn_ws_watcher().await?;
-        tokio::pin!(ws_watcher);
-        tokio::pin!(poll_interval);
+        let mut poll_interval = IntervalStream::new(interval(self.fetch_interval));
+        let mut ws_watcher = self.spawn_ws_watcher().await?;
 
         log::info!("Succesfully initialised watcher and poller");
         loop {
@@ -131,7 +130,7 @@ impl<P: Processor, S: LogStorage> Indexer<P, S> {
         Ok(())
     }
 
-    async fn spawn_ws_watcher(&self) -> anyhow::Result<Box<dyn Stream<Item = Log> + Unpin>> {
+    async fn spawn_ws_watcher(&self) -> anyhow::Result<Box<dyn Stream<Item = Log> + Unpin + Send>> {
         let ws_provider = match self.ws_provider {
             Some(ref ws_provider) => ws_provider.clone(),
             None => return Ok(Box::new(stream::empty())),
@@ -165,6 +164,7 @@ impl<P: Processor, S: LogStorage> Indexer<P, S> {
                 self.chain_id,
                 &logs,
                 &self.filter_id,
+                self.last_observed_block,
                 last_block_number,
                 &mut self.log_processor,
             )

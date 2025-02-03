@@ -11,7 +11,7 @@ use alloy::{
     sol_types::SolEvent,
 };
 use anyhow::Result;
-use sqlx::SqlitePool;
+use sqlx::{Database, SqlitePool};
 
 // Codegen from embedded Solidity code and precompiled bytecode.
 // solc v0.8.26; solc Counter.sol --via-ir --optimize --bin
@@ -24,11 +24,13 @@ sol!(
 
 pub struct TestProcessor;
 
-impl Processor for TestProcessor {
-    async fn process<DB: sqlx::Database>(
+impl<'a, DB: Database> Processor<sqlx::Transaction<'a, DB>> for TestProcessor {
+    async fn process(
         &mut self,
         logs: &[alloy::rpc::types::Log],
-        _transaction: &mut sqlx::Transaction<'static, DB>,
+        _transaction: &mut sqlx::Transaction<'a, DB>,
+        _prev_saved_block: u64,
+        _new_saved_block: u64,
         _chain_id: u64,
     ) -> anyhow::Result<()> {
         println!("{logs:?}");
@@ -63,20 +65,27 @@ async fn happy_path(pool: SqlitePool) -> Result<()> {
     let ws_url = anvil.ws_endpoint_url().clone();
     let http_url = anvil.endpoint_url().clone();
 
-    Indexer::builder()
-        .http_rpc_url(http_url)
-        .ws_rpc_url(ws_url)
-        .fetch_interval(Duration::from_secs(10))
-        .filter(Filter::new().address(contract_address).events([
-            MockERC20::Transfer::SIGNATURE,
-            MockERC20::Approval::SIGNATURE,
-        ]))
-        .set_processor(TestProcessor)
-        .sqlite_storage(pool)
-        .build()
-        .await
-        .unwrap()
-        .run()
-        .await?;
+    let handle = tokio::spawn(async move {
+        Indexer::builder()
+            .http_rpc_url(http_url)
+            .ws_rpc_url(ws_url)
+            .fetch_interval(Duration::from_secs(10))
+            .filter(Filter::new().address(contract_address).events([
+                MockERC20::Transfer::SIGNATURE,
+                MockERC20::Approval::SIGNATURE,
+            ]))
+            .sqlite_storage(pool)
+            .set_processor(TestProcessor)
+            .build()
+            .await
+            .unwrap()
+            .run()
+            .await
+            .unwrap();
+    });
+
+    // тут нужно какие то ассерты по тесту делать
+
+    handle.abort();
     Ok(())
 }

@@ -6,20 +6,28 @@ use crate::indexer1::{filter_id, Processor};
 use super::LogStorage;
 
 impl LogStorage for Pool<Postgres> {
-    async fn insert_logs<P: Processor>(
+    type Transaction = sqlx::Transaction<'static, Postgres>;
+    async fn insert_logs<P: Processor<Self::Transaction>>(
         &self,
         chain_id: u64,
         logs: &[Log],
         filter_id: &str,
-        new_last_observed_block: u64,
+        prev_saved_block: u64,
+        new_saved_block: u64,
         log_processor: &mut P,
     ) -> anyhow::Result<()> {
         let mut transaction = self.begin().await?;
         log_processor
-            .process(logs, &mut transaction, chain_id)
+            .process(
+                logs,
+                &mut transaction,
+                prev_saved_block,
+                new_saved_block,
+                chain_id,
+            )
             .await?;
         sqlx::query(include_str!("sql/update_filter.sql"))
-            .bind::<i64>(new_last_observed_block.try_into()?)
+            .bind::<i64>(new_saved_block.try_into()?)
             .bind(filter_id)
             .execute(&mut *transaction)
             .await?;
