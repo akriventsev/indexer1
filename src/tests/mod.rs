@@ -85,7 +85,6 @@ async fn happy_path(pool: SqlitePool) -> Result<()> {
     });
 
     // тут нужно какие то ассерты по тесту делать
-
     handle.abort();
     Ok(())
 }
