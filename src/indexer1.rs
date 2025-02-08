@@ -144,18 +144,15 @@ impl<S: LogStorage, P: Processor<S::Transaction>> Indexer<S, P> {
     }
 
     async fn handle_tick(&mut self) -> anyhow::Result<()> {
-        let last_block_number = self.provider.get_block_number().await?;
+        let to_block = self.provider.get_block_number().await?;
+        let from_block = self.last_observed_block + 1;
         let filter = self
             .filter
             .clone()
-            .from_block(self.last_observed_block)
-            .to_block(last_block_number - 1);
+            .from_block(from_block)
+            .to_block(to_block);
 
-        log::debug!(
-            "Fetching logs from {} to {}",
-            self.last_observed_block,
-            last_block_number
-        );
+        log::debug!("Fetching logs from {} to {}", from_block, to_block);
         let logs = self.provider.get_logs(&filter).await?;
 
         log::debug!("Updating storage ");
@@ -164,13 +161,13 @@ impl<S: LogStorage, P: Processor<S::Transaction>> Indexer<S, P> {
                 self.chain_id,
                 &logs,
                 &self.filter_id,
-                self.last_observed_block,
-                last_block_number,
+                from_block,
+                to_block,
                 &mut self.log_processor,
             )
             .await?;
 
-        self.last_observed_block = last_block_number;
+        self.last_observed_block = to_block;
         Ok(())
     }
 }
