@@ -3,11 +3,9 @@ use std::time::Duration;
 
 use alloy::{
     primitives::keccak256,
-    providers::{Provider, RootProvider},
-    pubsub::PubSubFrontend,
+    providers::Provider,
     rpc::types::{Filter, Log},
     sol_types::SolValue,
-    transports::http::{Client, Http},
 };
 use futures::{stream, Future, Stream, StreamExt};
 use sha2::{Digest, Sha256};
@@ -75,8 +73,8 @@ pub struct Indexer<S: LogStorage, P: Processor<S::Transaction>> {
     last_observed_block: u64,
     storage: S,
     log_processor: P,
-    provider: RootProvider<Http<Client>>,
-    ws_provider: Option<RootProvider<PubSubFrontend>>,
+    provider: Box<dyn Provider>,
+    ws_provider: Option<Box<dyn Provider>>,
     fetch_interval: Duration,
 }
 
@@ -88,8 +86,8 @@ impl<S: LogStorage, P: Processor<S::Transaction>> Indexer<S, P> {
     pub async fn new(
         log_processor: P,
         filter: Filter,
-        provider: RootProvider<Http<Client>>,
-        ws_provider: Option<RootProvider<PubSubFrontend>>,
+        provider: Box<dyn Provider>,
+        ws_provider: Option<Box<dyn Provider>>,
         fetch_interval: Duration,
         storage: S,
     ) -> anyhow::Result<Self> {
@@ -132,7 +130,7 @@ impl<S: LogStorage, P: Processor<S::Transaction>> Indexer<S, P> {
 
     async fn spawn_ws_watcher(&self) -> anyhow::Result<Box<dyn Stream<Item = Log> + Unpin + Send>> {
         let ws_provider = match self.ws_provider {
-            Some(ref ws_provider) => ws_provider.clone(),
+            Some(ref ws_provider) => ws_provider,
             None => return Ok(Box::new(stream::empty())),
         };
 

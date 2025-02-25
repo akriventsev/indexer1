@@ -2,13 +2,11 @@
 use std::time::Duration;
 
 use alloy::{
-    providers::{ProviderBuilder, RootProvider, WsConnect},
-    pubsub::PubSubFrontend,
+    providers::{Provider, ProviderBuilder, WsConnect},
     rpc::types::Filter,
-    transports::http::{reqwest::Url, Client, Http},
+    transports::http::reqwest::Url,
 };
 use anyhow::{anyhow, Context};
-use futures::future::Either;
 use sqlx::{PgPool, Postgres, Sqlite, SqlitePool};
 
 use crate::{
@@ -17,8 +15,8 @@ use crate::{
 };
 
 pub struct IndexerBuilder<S: LogStorage, P: Processor<S::Transaction>> {
-    http_provider: Option<Either<Url, RootProvider<Http<Client>>>>,
-    ws_provider: Option<Either<Url, RootProvider<PubSubFrontend>>>,
+    http_provider: Option<Url>,
+    ws_provider: Option<Url>,
     poll_interval: Option<Duration>,
     filter: Option<Filter>,
     processor: Option<P>,
@@ -54,7 +52,7 @@ impl<P: Processor<sqlx::Transaction<'static, Sqlite>>> IndexerBuilder<SqlitePool
 
 impl<S: LogStorage, P: Processor<S::Transaction>> IndexerBuilder<S, P> {
     pub fn http_rpc_url(mut self, url: Url) -> Self {
-        self.http_provider = Some(Either::Left(url));
+        self.http_provider = Some(url);
         self
     }
 
@@ -69,12 +67,12 @@ impl<S: LogStorage, P: Processor<S::Transaction>> IndexerBuilder<S, P> {
     }
 
     pub fn ws_rpc_url(mut self, url: Url) -> Self {
-        self.ws_provider = Some(Either::Left(url));
+        self.ws_provider = Some(url);
         self
     }
 
     pub fn ws_rpc_url_opt(mut self, url: Option<Url>) -> Self {
-        self.ws_provider = url.map(Either::Left);
+        self.ws_provider = url;
         self
     }
 
@@ -84,24 +82,19 @@ impl<S: LogStorage, P: Processor<S::Transaction>> IndexerBuilder<S, P> {
     }
 
     pub async fn build(self) -> anyhow::Result<Indexer<S, P>> {
-        let http_provider = match self
+        let http_url = self
             .http_provider
-            .ok_or(anyhow!("Http porvider is missing"))?
-        {
-            Either::Left(url) => ProviderBuilder::new().on_http(url),
-            Either::Right(p) => p,
-        };
+            .ok_or(anyhow!("Http porvider is missing"))?;
 
-        let ws_provider = match self.ws_provider {
-            Some(d) => match d {
-                Either::Left(url) => Some(
-                    ProviderBuilder::new()
-                        .on_ws(WsConnect::new(url.to_string()))
-                        .await
-                        .with_context(|| anyhow!("Failed to connect to rpc via WS"))?,
-                ),
-                Either::Right(p) => Some(p),
-            },
+        let http_provider = ProviderBuilder::new().on_http(http_url);
+
+        let ws_provider: Option<Box<dyn Provider>> = match self.ws_provider {
+            Some(url) => Some(Box::new(
+                ProviderBuilder::new()
+                    .on_ws(WsConnect::new(url.to_string()))
+                    .await
+                    .with_context(|| anyhow!("Failed to connect to rpc via WS"))?,
+            )),
             None => None,
         };
 
@@ -116,7 +109,7 @@ impl<S: LogStorage, P: Processor<S::Transaction>> IndexerBuilder<S, P> {
         Indexer::new(
             processor,
             filter,
-            http_provider,
+            Box::new(http_provider),
             ws_provider,
             fetch_interval,
             storage,

@@ -3,10 +3,12 @@ use std::time::Duration;
 use crate::indexer1::{Indexer, Processor};
 
 use alloy::{
+    network::EthereumWallet,
     node_bindings::Anvil,
     primitives::{Address, U256},
     providers::ProviderBuilder,
     rpc::types::Filter,
+    signers::local::PrivateKeySigner,
     sol,
     sol_types::SolEvent,
 };
@@ -40,11 +42,14 @@ impl<'a, DB: Database> Processor<sqlx::Transaction<'a, DB>> for TestProcessor {
 
 #[sqlx::test]
 async fn happy_path(pool: SqlitePool) -> Result<()> {
-    let anvil = Anvil::new().block_time(1).try_spawn()?;
+    let anvil = Anvil::new().block_time_f64(0.1).try_spawn()?;
+
+    let signer: PrivateKeySigner = anvil.keys()[0].clone().into();
+    let wallet = EthereumWallet::from(signer);
 
     // Create a provider.
     let ws = alloy::providers::WsConnect::new(anvil.ws_endpoint());
-    let provider = ProviderBuilder::new().on_ws(ws).await?;
+    let provider = ProviderBuilder::new().wallet(wallet).on_ws(ws).await?;
 
     let contract = MockERC20::deploy(
         provider,
@@ -55,7 +60,7 @@ async fn happy_path(pool: SqlitePool) -> Result<()> {
     .await?;
 
     contract
-        .transfer(Address::ZERO, U256::from(1))
+        .transfer(Address::from([3; 20]), U256::from(1))
         .send()
         .await?
         .watch()
